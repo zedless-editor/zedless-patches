@@ -12,6 +12,14 @@ import toml
 import match
 import match.rust
 
+import argparse
+parser = argparse.ArgumentParser(
+    prog       ='Zedless Patch',
+    description='Patches Zed with focus on privacy and being local-first',
+    epilog     ='')
+parser.add_argument('-s','--src',type=str,default="source",help="Path of the Zed's source code")
+parser.add_argument('-v','--verbose',action='store_true',help="Print more info when running")
+
 @contextmanager
 def editTomlDocument(file):
     def callback(v):
@@ -60,21 +68,27 @@ def runRules(rules):
         configFile.close()
         # HACK: some of our rules can be applied multiple times,
         # so run ast-grep until no more changes are applied
-        while True:
-            r = run([
-                "ast-grep", "scan", "--update-all",
-                "--config", configFile.name,
-                "--rule", "/dev/stdin",
-                "--color", "never",
-                "."
-            ], input="\n---\n".join([dumps(r) for r in rules]).encode(), capture_output=True)
-            output = r.stderr.decode()
-            if r.returncode != 0:
-                print(output)
-                exit(r.returncode)
-            if not (output.startswith("Applied ") and output.endswith(" changes\n")):
-                break
-            print(output.strip())
+        import sys
+        import tempfile
+        rules = "\n---\n".join([dumps(r) for r in rules]).encode()
+        with tempfile.NamedTemporaryFile(delete=False,delete_on_close=False) as ftmp:
+            ftmp.write(rules)
+            ftmp.flush(); ftmp.seek(0); ftmp.close()
+            while True:
+                r = run([
+                    "ast-grep", "scan", "--update-all",
+                    "--config", configFile.name,
+                    "--rule", ftmp.name,
+                    "--color", "never",
+                    "."
+                ], capture_output=True)
+                output = r.stderr.decode()
+                if r.returncode != 0:
+                    print(output)
+                    exit(r.returncode)
+                if not (output.startswith("Applied ") and output.endswith(" changes\n")):
+                    break
+                print(output.strip())
 
 def deletePatterns(target, language, patterns, selector=None):
     rule = {
@@ -467,8 +481,12 @@ def nullifyIfStatement(target, conditionPattern: str | list[str], selectElse=Tru
             for pattern in conditionPattern
         ])
 
-
-with chdir("source"):
+from pathlib      import Path
+args = parser.parse_args()
+import shutil
+import os
+dir_main = os.path.dirname(os.path.realpath(__file__))
+with chdir(args.src):
     rules = []
 
     cratesToDelete = []
@@ -519,8 +537,9 @@ with chdir("source"):
 
     if len(cratesToDelete) > 0:
         for crate in cratesToDelete:
-            print("delete crate:", crate)
-            run(["rm", "-rf", f"crates/{crate}/"])
+            tgt = Path(args.src) / 'crates' / crate
+            print(f"del crate: {crate}\t@ {tgt}")
+            shutil.rmtree(tgt, ignore_errors=True) #onexc=remove_readonly
 
         with editTomlDocument("Cargo.toml") as (data, write):
             data["workspace"]["members"] = list(filter(
@@ -560,7 +579,8 @@ with chdir("source"):
                 write(data)
 
     for (crate, mod) in CONFIG.bannedModules:
-        print("delete module:", crate, mod)
+        tgt_src = Path(args.src) / 'crates' / crate / 'src'
+        print("del mod:", crate, mod, f"\t@ {tgt_src}")
         rules.extend(deletePatterns(f"crates/{crate}/", "rust", [
             f"mod {mod};",
             f"pub mod {mod};",
@@ -635,11 +655,17 @@ with chdir("source"):
                 }
             }
         }))
-        run(["rm", "-f", f"crates/{crate}/src/{mod}.rs"] + glob(f"crates/{crate}/src/*/{mod}.rs"))
+        tgt_src = Path(args.src) / 'crates' / crate / 'src'
+        tgt_mod =  [    tgt_src    /   f"{mod}.rs"]
+        tgt_mod += list(tgt_src.glob(f"*/{mod}.rs"))
+        for tgt in tgt_mod:
+            shutil.rmtree(tgt, ignore_errors=True) #onexc=remove_readonly
 
     for provider in CONFIG.bannedLanguageModelProviders:
-        print("delete language model provider:", provider.structPrefix)
-        run(["rm", "-f", f"crates/language_models/src/provider/{provider.module}.rs"])
+        tgt_src = Path(args.src) / 'crates' / 'language_models' / 'src' / 'provider'
+        tgt = tgt_src / f"{provider.module}.rs"
+        print(f"del language model provider: {provider.structPrefix} \t@ {tgt}")
+        shutil.rmtree(tgt, ignore_errors=True) #onexc=remove_readonly
         rules.extend(deletePatterns("crates/language_models/", "rust", [
             f"pub mod {provider.module};",
             f"use crate::provider::{provider.module}::$_;",
@@ -1284,6 +1310,8 @@ with chdir("source"):
 
     runRules(rules)
 
-    run([
-        "cp", "-r", "../overlay/.", "."
-    ]).check_returncode()
+    src = Path(dir_main) / 'overlay' / '.'
+    tgt = Path(args.src)
+    if args.verbose:
+        print(f"  {src}\n →{tgt}")
+    shutil.copytree(src,tgt,dirs_exist_ok=True)
