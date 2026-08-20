@@ -12,7 +12,7 @@
       nativeBuildInputs = with pkgs; [
         ast-grep
         (python3.withPackages (ps: [
-          ps.toml
+          ps.tomlkit
         ]))
       ];
     };

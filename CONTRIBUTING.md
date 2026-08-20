@@ -7,7 +7,7 @@ All the required tools are available in the `devShell`, so if you're using Nix, 
 The following tools are required to execute the patch script:
 
 - Python
-- The [`toml`](https://pypi.org/project/toml/) Python package
+- The [`tomlkit`](https://pypi.org/project/tomlkit/) Python package
 - [ast-grep](https://ast-grep.github.io/)
 
 ## Patching and building the project
